@@ -1,9 +1,13 @@
 package com.ra4king.music_visualizer;
 
 import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL11.glGetInteger;
+import static org.lwjgl.opengl.GL13.*;
 import static org.lwjgl.opengl.GL15.*;
 import static org.lwjgl.opengl.GL20.*;
 import static org.lwjgl.opengl.GL30.*;
+import static org.lwjgl.opengl.GL42.*;
+import static org.lwjgl.opengl.GL43.*;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -18,6 +22,7 @@ import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.SourceDataLine;
 
 import org.lwjgl.BufferUtils;
+import org.lwjgl.opengl.GL30;
 
 import com.ra4king.opengl.util.GLProgram;
 import com.ra4king.opengl.util.ShaderProgram;
@@ -37,9 +42,14 @@ public class MusicVisualizer extends GLProgram {
 	
 	private WavFile wavFile;
 	private SourceDataLine audioDataLine;
-	
 	private ByteBuffer audioData;
-	private FloatBuffer freqs;
+	
+	private double[][] samples;
+	private int numRead;
+	
+	private ShaderProgram visualizerCompute;
+	
+	private FloatBuffer samplesBuffer;
 	
 	public MusicVisualizer() {
 		super("Music Visualizer", 800, 600, true);
@@ -53,8 +63,6 @@ public class MusicVisualizer extends GLProgram {
 		
 		setPrintDebug(true);
 		setFPS(60);
-		
-		visualizer = new ShaderProgram(readFromFile("visualizer.vert"), readFromFile("visualizer.frag"));
 		
 		FloatBuffer quadBuffer = BufferUtils.createFloatBuffer(4 * 2);
 		quadBuffer.put(new float[] {
@@ -90,10 +98,32 @@ public class MusicVisualizer extends GLProgram {
 		try {
 			wavFile = WavFile.openWavFile(new File(getClass().getResource("Stairway to Heaven.wav").toURI()));
 			wavFile.display();
+			
+			samples = new double[wavFile.getNumChannels()][5 * (int)(wavFile.getSampleRate())];
 		}
 		catch(Exception exc) {
 			throw new RuntimeException(exc);
 		}
+		
+		visualizer = new ShaderProgram(readFromFile("visualizer.vert"), readFromFile("visualizer.frag"));
+		visualizerCompute = new ShaderProgram(readFromFile("visualizer.comp"));
+		visualizerCompute.begin();
+		glUniform1f(visualizerCompute.getUniformLocation("samplerate"), wavFile.getSampleRate());
+		visualizerCompute.end();
+		
+		glActiveTexture(GL_TEXTURE0);
+		
+		int freqsTex = glGenTextures();
+		glBindTexture(GL_TEXTURE_2D, freqsTex);
+		glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, 2000, wavFile.getNumChannels());
+		
+		glBindImageTexture(0, freqsTex, 0, false, 0, GL_WRITE_ONLY, GL_R32F);
+		
+		int samplesBufferName = glGenBuffers();
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, samplesBufferName);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, 0, GL_DYNAMIC_DRAW);
+		
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, samplesBufferName);
 		
 		try {
 			AudioFormat format = new AudioFormat(Encoding.PCM_SIGNED, (float)wavFile.getSampleRate(), 16, wavFile.getNumChannels(), 2 * wavFile.getNumChannels(), (float)wavFile.getSampleRate(), true);
@@ -103,91 +133,71 @@ public class MusicVisualizer extends GLProgram {
 			
 			System.out.println(Arrays.toString(audioDataLine.getControls()));
 			
-			audioData = ByteBuffer.allocate((int)(wavFile.getSampleRate() * 2 * wavFile.getNumChannels()));
+			audioData = ByteBuffer.allocate(samples.length * samples[0].length * 2);
 			audioData.order(ByteOrder.BIG_ENDIAN);
 			
-			freqs = BufferUtils.createFloatBuffer((int)(wavFile.getSampleRate() / 100 * wavFile.getNumChannels()));
-		} catch(Exception exc) {
+			samplesBuffer = BufferUtils.createFloatBuffer(1000 * wavFile.getNumChannels());
+		}
+		catch(Exception exc) {
 			throw new RuntimeException(exc);
 		}
-	}
-	
-	/**
-	 * The Goertzel algorithm computes the k-th DFT coefficient of the input signal using a second-order filter.
-	 * http://ptolemy.eecs.berkeley.edu/papers/96/dtmf_ict/www/node3.html.
-	 * Basiclly it just does a DFT of the frequency we want to check, and none of the others (FFT calculates for all frequencies).
-	 */
-	private float goertzel(double x[], int count, float frequency, int samplerate) {
-		double Skn, Skn1, Skn2;
-		Skn = Skn1 = Skn2 = 0;
 		
-		for(int i = 0; i < count; i++) {
-			Skn2 = Skn1;
-			Skn1 = Skn;
-			Skn = 2 * Math.cos(2 * Math.PI * frequency / samplerate) * Skn1 - Skn2 + x[i];
-		}
-		
-		double WNk = Math.exp(-2 * Math.PI * frequency / samplerate);
-		return (float)(Skn - WNk * Skn1);
+		System.out.println("GL_MAX_COMPUTE_WORK_GROUP_COUNT: (" + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0) + ", "
+				                   + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1) + ", "
+				                   + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2) + ")");
+		System.out.println("GL_MAX_COMPUTE_WORK_GROUP_SIZE: (" + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0) + ", "
+				                   + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1) + ", "
+				                   + GL30.glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2) + ")");
+		System.out.println("GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: " + glGetInteger(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS));
+		System.out.println("GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: " + glGetInteger(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE));
 	}
 	
 	@Override
 	public void render() {
-		visualizer.begin();
-		
-		glUniform2f(visualizer.getUniformLocation("resolution"), getWidth(), getHeight());
-		
-		int frameCount = (int)(wavFile.getSampleRate() / (getLastFps() == 0 ? 60 : getLastFps()));
-		double[][] samples = new double[wavFile.getNumChannels()][frameCount];
-		
-		int numRead = 0;
-		try {
-			numRead = wavFile.readFrames(samples, frameCount);
-		} catch(Exception exc) {
-			exc.printStackTrace();
-			samples = null;
-		}
-		
-		audioData.clear();
+		samplesBuffer.clear();
 		for(int i = 0; i < numRead; i++) {
 			for(int j = 0; j < wavFile.getNumChannels(); j++) {
 				audioData.putShort((short)(samples[j][i] * 0x7FFF));
+				if(samplesBuffer.hasRemaining())
+					samplesBuffer.put((float)samples[j][i]);
 			}
 		}
-		audioDataLine.write(audioData.array(), 0, numRead * 2 * wavFile.getNumChannels());
+		samplesBuffer.flip();
 		
-		if(samples != null) {
-			final float maxFreq = 20000;
-			
-			freqs.clear();
-			
-			float step = maxFreq / (freqs.capacity() / wavFile.getNumChannels());
-			for(float i = 0; i < maxFreq && freqs.remaining() >= wavFile.getNumChannels(); i += step) {
-				for(int j = 0; j < wavFile.getNumChannels(); j++) {
-					try {
-						freqs.put(goertzel(samples[j], numRead, i, (int)wavFile.getSampleRate()));
-					} catch(Exception exc) {
-						System.out.println(numRead + " " + freqs.position());
-						throw exc;
-					}
-				}
-			}
-			freqs.flip();
-			
-			glUniform1(visualizer.getUniformLocation("frequencies"), freqs);
-			glUniform1i(visualizer.getUniformLocation("freqCount"), freqs.capacity() / wavFile.getNumChannels());
-			glUniform1f(visualizer.getUniformLocation("numChannels"), wavFile.getNumChannels());
-		}
+		int totalBytes = numRead * 2 * wavFile.getNumChannels();
+		int lenToWrite = Math.min(totalBytes, audioDataLine.available());
+		audioDataLine.write(audioData.array(), 0, lenToWrite);
+		audioData.flip().position(lenToWrite);
+		audioData.compact();
+		
+		glBufferData(GL_SHADER_STORAGE_BUFFER, samplesBuffer, GL_DYNAMIC_DRAW);
+		
+		visualizerCompute.begin();
+		glDispatchCompute(40, wavFile.getNumChannels(), 1);
+		
+		visualizer.begin();
+		glUniform2f(visualizer.getUniformLocation("resolution"), getWidth(), getHeight());
 		
 		glBindVertexArray(fullScreenQuadVao);
 		glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
 		glBindVertexArray(0);
-		
-		visualizer.end();
 	}
 	
 	@Override
 	public void update(long deltaTime) {
 		super.update(deltaTime);
+		
+		int frameCount = (int)(wavFile.getSampleRate() / (1e9 / deltaTime));
+		
+		int toRead = Math.min(Math.min(frameCount, samples[0].length), audioData.remaining() / (2 * wavFile.getNumChannels()));
+		
+		try {
+			numRead = wavFile.readFrames(samples, 0, toRead);
+		}
+		catch(Exception exc) {
+			System.out.println("Frame count: " + frameCount + ", len: " + samples[0].length);
+			exc.printStackTrace();
+			numRead = 0;
+		}
 	}
 }
