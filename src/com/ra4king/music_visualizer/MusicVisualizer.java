@@ -96,7 +96,7 @@ public class MusicVisualizer extends GLProgram {
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 		
 		try {
-			wavFile = WavFile.openWavFile(new File(getClass().getResource("Stairway to Heaven.wav").toURI()));
+			wavFile = WavFile.openWavFile(new File("Stairway to Heaven.wav"));
 			wavFile.display();
 			
 			samples = new double[wavFile.getNumChannels()][5 * (int)(wavFile.getSampleRate())];
@@ -152,6 +152,8 @@ public class MusicVisualizer extends GLProgram {
 		System.out.println("GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: " + glGetInteger(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE));
 	}
 	
+	private long totalTime;
+	
 	@Override
 	public void render() {
 		samplesBuffer.clear();
@@ -177,6 +179,7 @@ public class MusicVisualizer extends GLProgram {
 		
 		visualizer.begin();
 		glUniform2f(visualizer.getUniformLocation("resolution"), getWidth(), getHeight());
+		glUniform1f(visualizer.getUniformLocation("time"), totalTime / 1e9f);
 		
 		glBindVertexArray(fullScreenQuadVao);
 		glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
@@ -186,6 +189,7 @@ public class MusicVisualizer extends GLProgram {
 	@Override
 	public void update(long deltaTime) {
 		super.update(deltaTime);
+		totalTime += deltaTime;
 		
 		int frameCount = (int)(wavFile.getSampleRate() / (1e9 / deltaTime));
 		
